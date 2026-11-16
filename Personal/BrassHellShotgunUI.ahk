@@ -7,9 +7,9 @@ CoordMode("Mouse", "Screen")
 
 ; --- DEFAULT CONFIGURATION VALUES ---
 QuickHold := 60          ; Fast tap duration (ms)
-PressHold := 2000        ; Shell press duration (ms)
-ScanDelay := 70          ; OCR scan interval (ms)
-SettleDelay := 150       ; Reduced default alignment wait (ms)
+PressHold := 2000        ; 2000 ms shell press duration
+ScanDelay := 100         ; How fast OCR scans the prompt text (ms)
+SettleDelay := 200       ; Wait time before pressing bullet so machine aligns (ms)
 
 ; --- OCR REGION ---
 BoxX := 800
@@ -18,8 +18,8 @@ BoxW := 260
 BoxH := 70
 Step1Set := false
 Toggle := false
-LastPrompt := ""         ; Track last read text to prevent GUI lag
-ActionLock := 0          ; Prevents duplicate spamming during animation
+LastPrompt := ""
+GuideOverlay := ""
 
 ; --- CREATE THE SETTINGS UI ---
 MyGui := Gui("+AlwaysOnTop", "Brass Hell - OCR Prompt Reader")
@@ -31,15 +31,16 @@ EditQuick := MyGui.Add("Edit", "x+10 w80 Number", QuickHold)
 MyGui.Add("Text", "xm w175", "Shell Press Hold (ms):")
 EditPress := MyGui.Add("Edit", "x+10 w80 Number", PressHold)
 
+MyGui.Add("Text", "xm w175", "Press Align Delay (ms):")
+EditSettle := MyGui.Add("Edit", "x+10 w80 Number", SettleDelay)
+
 MyGui.Add("Text", "xm w175", "OCR Scan Speed (ms):")
 EditScan := MyGui.Add("Edit", "x+10 w80 Number", ScanDelay)
 
-MyGui.Add("Text", "xm w175", "Machine Settle Delay (ms):")
-EditSettle := MyGui.Add("Edit", "x+10 w80 Number", SettleDelay)
-
 MyGui.Add("Text", "xm y+12 w290 cBlue", "--- Prompt Text Area Setup ---")
-BtnSetBox := MyGui.Add("Button", "xm y+5 w290", "Set Text Box Corners (Press F7 Twice)")
-RegionInfo := MyGui.Add("Text", "xm y+5 w290 cGray", "Box: X" BoxX " Y" BoxY " (" BoxW "x" BoxH ")")
+BtnSetBox := MyGui.Add("Button", "xm y+5 w190", "Set Box (F7)")
+ChkShowBox := MyGui.Add("CheckBox", "x+10 yp+4", "Show Box")
+RegionInfo := MyGui.Add("Text", "xm y+8 w290 cGray", "Box: X" BoxX " Y" BoxY " (" BoxW "x" BoxH ")")
 LiveReadText := MyGui.Add("Text", "xm y+5 w290 cPurple", "Last Read: [None]")
 
 BtnApply := MyGui.Add("Button", "xm y+12 w140 Default", "Apply Settings")
@@ -48,6 +49,7 @@ StatusText := MyGui.Add("Text", "xm y+10 w290 cGray", "Status: Stopped | Press F
 
 ; Bind UI Events
 BtnSetBox.OnEvent("Click", (*) => SetBoxCorner())
+ChkShowBox.OnEvent("Click", (*) => UpdateGuideBox())
 BtnApply.OnEvent("Click", ApplySettings)
 BtnToggle.OnEvent("Click", (*) => ToggleMacro())
 MyGui.OnEvent("Close", (*) => ExitApp())
@@ -64,44 +66,58 @@ SetBoxCorner() {
     MouseGetPos(&mx, &my)
 
     if (!Step1Set) {
+        ; 1st press (or odd press): Update Top-Left corner immediately (keeps scanning!)
         BoxX := mx
         BoxY := my
         Step1Set := true
         RegionInfo.SetFont("cD97706")
         RegionInfo.Text := "Top-Left set (" BoxX "," BoxY "). Hover Bottom-Right & press F7!"
+        UpdateGuideBox(true)
     } else {
+        ; 2nd press (or even press): Set Bottom-Right width/height
         BoxW := Max(20, mx - BoxX)
         BoxH := Max(20, my - BoxY)
         Step1Set := false
         RegionInfo.SetFont("cGreen")
         RegionInfo.Text := "Box Set: X" BoxX " Y" BoxY " (" BoxW "x" BoxH ")"
-        FlashCaptureBox(BoxX, BoxY, BoxW, BoxH)
+        UpdateGuideBox(true)
     }
 }
 
-FlashCaptureBox(x, y, w, h) {
-    Overlay := Gui("+AlwaysOnTop -Caption +ToolWindow +E0x20")
-    Overlay.BackColor := "Red"
-    Overlay.Show("x" x " y" y " w" w " h" h " NoActivate")
-    WinSetTransparent(90, Overlay)
-    SetTimer(() => Overlay.Destroy(), -800)
+UpdateGuideBox(flash := false) {
+    global BoxX, BoxY, BoxW, BoxH, GuideOverlay, ChkShowBox
+
+    if (IsObject(GuideOverlay)) {
+        GuideOverlay.Destroy()
+        GuideOverlay := ""
+    }
+
+    if (ChkShowBox.Value || flash) {
+        GuideOverlay := Gui("+AlwaysOnTop -Caption +ToolWindow +E0x20")
+        GuideOverlay.BackColor := "Red"
+        GuideOverlay.Show("x" BoxX " y" BoxY " w" BoxW " h" BoxH " NoActivate")
+        WinSetTransparent(55, GuideOverlay)
+
+        if (!ChkShowBox.Value && flash) {
+            SetTimer(() => UpdateGuideBox(false), -800)
+        }
+    }
 }
 
 ApplySettings(*) {
     global QuickHold, PressHold, ScanDelay, SettleDelay
     QuickHold := Integer(EditQuick.Value || 60)
     PressHold := Integer(EditPress.Value || 2000)
-    ScanDelay := Integer(EditScan.Value || 70)
-    SettleDelay := Integer(EditSettle.Value || 150)
+    SettleDelay := Integer(EditSettle.Value || 200)
+    ScanDelay := Integer(EditScan.Value || 100)
     StatusText.Text := "Status: Settings Applied!"
 }
 
 ToggleMacro() {
-    global Toggle, LastPrompt, ActionLock
+    global Toggle, LastPrompt
     ApplySettings()
     Toggle := !Toggle
     LastPrompt := ""
-    ActionLock := 0
 
     if (Toggle) {
         BtnToggle.Text := "Stop (F6)"
@@ -118,12 +134,8 @@ ToggleMacro() {
 }
 
 ReadPromptAndAct() {
-    global BoxX, BoxY, BoxW, BoxH, QuickHold, PressHold, Toggle, LastPrompt, ActionLock, SettleDelay
+    global BoxX, BoxY, BoxW, BoxH, QuickHold, PressHold, SettleDelay, Toggle, LastPrompt
     if (!Toggle) {
-        return
-    }
-
-    if (A_TickCount < ActionLock) {
         return
     }
 
@@ -135,44 +147,35 @@ ReadPromptAndAct() {
         Result := OCR.FromRect(BoxX, BoxY, BoxW, BoxH, {scale: 3})
         PromptText := RegExReplace(Trim(Result.Text), "\s+", " ")
 
-        if (PromptText = "") {
-            LastPrompt := ""
-            return
-        }
-
         if (PromptText != LastPrompt) {
             LastPrompt := PromptText
             LiveReadText.SetFont("cPurple")
-            LiveReadText.Text := "Last Read: " PromptText
+            LiveReadText.Text := "Last Read: " (PromptText != "" ? PromptText : "[Empty]")
         }
 
-        ; Handle Press or Crimp prompts
+        if (PromptText = "") {
+            return
+        }
+
+        ; 2000 ms hold when prompt mentions Press or Crimp
         if (InStr(PromptText, "Press") || InStr(PromptText, "Crimp")) {
-            StatusText.Text := "Status: Aligning..."
             if (SettleDelay > 0) {
                 Sleep(SettleDelay)
             }
-
-            StatusText.Text := "Status: Pressing..."
             Send("{e down}")
             Sleep(PressHold)
             Send("{e up}")
-            
-            ; Lean lockout that clears right as the action finishes
-            ActionLock := A_TickCount + 100
-            LastPrompt := ""
+            Sleep(150)
         }
-        ; Handle Pack / general prompts with snappy response
+        ; Any other readable prompt triggers a quick E tap
         else if (StrLen(PromptText) >= 2) {
-            StatusText.Text := "Status: Action (E)..."
             Send("{e down}")
             Sleep(QuickHold)
             Send("{e up}")
-            
-            ActionLock := A_TickCount + 80
-            LastPrompt := ""
+            Sleep(120)
         }
     } catch as err {
-        ; Silently catch OCR glitches
+        LiveReadText.SetFont("cRed")
+        LiveReadText.Text := "OCR Error: " err.Message
     }
 }
