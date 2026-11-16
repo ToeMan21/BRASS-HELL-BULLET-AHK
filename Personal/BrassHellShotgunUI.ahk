@@ -1,4 +1,4 @@
-﻿#Requires AutoHotkey v2.0
+#Requires AutoHotkey v2.0
 #SingleInstance Force
 #Include OCR.ahk
 
@@ -7,8 +7,9 @@ CoordMode("Mouse", "Screen")
 
 ; --- DEFAULT CONFIGURATION VALUES ---
 QuickHold := 60          ; Fast tap duration (ms)
-PressHold := 2000        ; 2000 ms shell press duration
-ScanDelay := 100         ; How fast OCR scans the prompt text (ms)
+PressHold := 2000        ; Shell press duration (ms)
+ScanDelay := 70          ; OCR scan interval (ms)
+SettleDelay := 150       ; Reduced default alignment wait (ms)
 
 ; --- OCR REGION ---
 BoxX := 800
@@ -17,6 +18,8 @@ BoxW := 260
 BoxH := 70
 Step1Set := false
 Toggle := false
+LastPrompt := ""         ; Track last read text to prevent GUI lag
+ActionLock := 0          ; Prevents duplicate spamming during animation
 
 ; --- CREATE THE SETTINGS UI ---
 MyGui := Gui("+AlwaysOnTop", "Brass Hell - OCR Prompt Reader")
@@ -30,6 +33,9 @@ EditPress := MyGui.Add("Edit", "x+10 w80 Number", PressHold)
 
 MyGui.Add("Text", "xm w175", "OCR Scan Speed (ms):")
 EditScan := MyGui.Add("Edit", "x+10 w80 Number", ScanDelay)
+
+MyGui.Add("Text", "xm w175", "Machine Settle Delay (ms):")
+EditSettle := MyGui.Add("Edit", "x+10 w80 Number", SettleDelay)
 
 MyGui.Add("Text", "xm y+12 w290 cBlue", "--- Prompt Text Area Setup ---")
 BtnSetBox := MyGui.Add("Button", "xm y+5 w290", "Set Text Box Corners (Press F7 Twice)")
@@ -82,17 +88,20 @@ FlashCaptureBox(x, y, w, h) {
 }
 
 ApplySettings(*) {
-    global QuickHold, PressHold, ScanDelay
+    global QuickHold, PressHold, ScanDelay, SettleDelay
     QuickHold := Integer(EditQuick.Value || 60)
     PressHold := Integer(EditPress.Value || 2000)
-    ScanDelay := Integer(EditScan.Value || 100)
+    ScanDelay := Integer(EditScan.Value || 70)
+    SettleDelay := Integer(EditSettle.Value || 150)
     StatusText.Text := "Status: Settings Applied!"
 }
 
 ToggleMacro() {
-    global Toggle
+    global Toggle, LastPrompt, ActionLock
     ApplySettings()
     Toggle := !Toggle
+    LastPrompt := ""
+    ActionLock := 0
 
     if (Toggle) {
         BtnToggle.Text := "Stop (F6)"
@@ -109,47 +118,61 @@ ToggleMacro() {
 }
 
 ReadPromptAndAct() {
-    global BoxX, BoxY, BoxW, BoxH, QuickHold, PressHold, Toggle
+    global BoxX, BoxY, BoxW, BoxH, QuickHold, PressHold, Toggle, LastPrompt, ActionLock, SettleDelay
     if (!Toggle) {
         return
     }
 
-    if (!WinActive("ahk_exe RobloxPlayerBeta.exe") && !WinActive("Roblox")) {
-        StatusText.Text := "Status: Waiting for Roblox window focus..."
+    if (A_TickCount < ActionLock) {
         return
     }
 
-    StatusText.Text := "Status: Scanning prompt..."
+    if (!WinActive("ahk_exe RobloxPlayerBeta.exe") && !WinActive("Roblox")) {
+        return
+    }
 
     try {
-        ; OCR.ahk v2.0.0 uses an options object {scale: 3} as the 5th parameter
         Result := OCR.FromRect(BoxX, BoxY, BoxW, BoxH, {scale: 3})
         PromptText := RegExReplace(Trim(Result.Text), "\s+", " ")
-        LiveReadText.SetFont("cPurple")
-        LiveReadText.Text := "Last Read: " (PromptText != "" ? PromptText : "[Empty]")
 
         if (PromptText = "") {
+            LastPrompt := ""
             return
         }
 
-        ; 2000 ms hold when prompt mentions Press or Crimp
+        if (PromptText != LastPrompt) {
+            LastPrompt := PromptText
+            LiveReadText.SetFont("cPurple")
+            LiveReadText.Text := "Last Read: " PromptText
+        }
+
+        ; Handle Press or Crimp prompts
         if (InStr(PromptText, "Press") || InStr(PromptText, "Crimp")) {
-            StatusText.Text := "Status: Holding E (" PressHold "ms)..."
+            StatusText.Text := "Status: Aligning..."
+            if (SettleDelay > 0) {
+                Sleep(SettleDelay)
+            }
+
+            StatusText.Text := "Status: Pressing..."
             Send("{e down}")
             Sleep(PressHold)
             Send("{e up}")
-            Sleep(150)
+            
+            ; Lean lockout that clears right as the action finishes
+            ActionLock := A_TickCount + 100
+            LastPrompt := ""
         }
-        ; Any other readable prompt triggers a quick E tap
+        ; Handle Pack / general prompts with snappy response
         else if (StrLen(PromptText) >= 2) {
-            StatusText.Text := "Status: Quick tap E..."
+            StatusText.Text := "Status: Action (E)..."
             Send("{e down}")
             Sleep(QuickHold)
             Send("{e up}")
-            Sleep(120)
+            
+            ActionLock := A_TickCount + 80
+            LastPrompt := ""
         }
     } catch as err {
-        LiveReadText.SetFont("cRed")
-        LiveReadText.Text := "OCR Error: " err.Message
+        ; Silently catch OCR glitches
     }
 }
